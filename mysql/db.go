@@ -154,8 +154,8 @@ func warmUpPool(instanceName string, connection *sql.DB, poolSize int) {
 		return
 	}
 
-	// 后台预热：协程入口走 Hook.Async，宿主可用能继承协程变量（gin 上下文/日志绑定）的实现
-	hookAsync(func() {
+	// 后台预热：普通协程 + recover（预热日志走标准库 log，不依赖宿主的日志框架）
+	runAsync(func() {
 		begin := time.Now()
 		preCreatedConn := make([]*sql.Conn, remainCount)
 
@@ -270,7 +270,7 @@ func PoolHealth() (map[string]*PoolHealthInfo, bool) {
 func Query(query string, args ...any) (*sql.Rows, error) {
 	queryBegin := time.Now()
 	rows, queryErr := DB.Query(query, args...)
-	RecordSQL(time.Since(queryBegin), query, args...)
+	recordSQL(time.Since(queryBegin), query, args...)
 	return rows, queryErr
 }
 
@@ -278,7 +278,7 @@ func Query(query string, args ...any) (*sql.Rows, error) {
 func QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	queryBegin := time.Now()
 	rows, queryErr := DB.QueryContext(ctx, query, args...)
-	RecordSQL(time.Since(queryBegin), query, args...)
+	recordSQL(time.Since(queryBegin), query, args...)
 	return rows, queryErr
 }
 
@@ -289,13 +289,13 @@ func QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, er
 //
 // QueryRow 真正执行发生在调用方 Scan 时，这里只能记录语句、无法计耗时。
 func QueryRow(query string, args ...any) *sql.Row {
-	RecordSQL(0, query, args...)
+	recordSQL(0, query, args...)
 	return DB.QueryRow(query, args...)
 }
 
 // QueryRowContext 带 context 的 QueryRow。
 func QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	RecordSQL(0, query, args...)
+	recordSQL(0, query, args...)
 	return DB.QueryRowContext(ctx, query, args...)
 }
 
@@ -304,7 +304,7 @@ func QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 func Exec(query string, args ...any) (sql.Result, error) {
 	execBegin := time.Now()
 	result, execErr := DB.Exec(query, args...)
-	RecordSQL(time.Since(execBegin), query, args...)
+	recordSQL(time.Since(execBegin), query, args...)
 	return result, execErr
 }
 
@@ -312,7 +312,7 @@ func Exec(query string, args ...any) (sql.Result, error) {
 func ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	execBegin := time.Now()
 	result, execErr := DB.ExecContext(ctx, query, args...)
-	RecordSQL(time.Since(execBegin), query, args...)
+	recordSQL(time.Since(execBegin), query, args...)
 	return result, execErr
 }
 

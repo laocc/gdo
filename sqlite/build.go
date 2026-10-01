@@ -35,6 +35,7 @@ type Builder struct {
 	db            *sql.DB
 	trx           *sql.Tx
 	table         string
+	distinct      bool
 	fields        []string
 	skipFields    []string
 	where         []string
@@ -91,6 +92,14 @@ func (builder *Builder) queryRow(query string, args ...any) (*sql.Row, error) {
 // Select 指定查询字段，默认 *
 func (builder *Builder) Select(fields ...string) *Builder {
 	builder.fields = fields
+	return builder
+}
+
+// Distinct 消除查询结果中的重复行（SELECT DISTINCT）。
+// 与 Select / SelectSkip 连用，结果按所选列去重。
+// 用法: sqlite.Table("tabVoucher").Distinct().Select("voState").Pluck("voState")
+func (builder *Builder) Distinct() *Builder {
+	builder.distinct = true
 	return builder
 }
 
@@ -312,6 +321,11 @@ func (builder *Builder) buildQuery() (string, []any, error) {
 			}
 		}
 		fieldStr = strings.Join(selectedColumns, ", ")
+	}
+
+	// DISTINCT 消除重复行
+	if builder.distinct {
+		fieldStr = "DISTINCT " + fieldStr
 	}
 
 	query := fmt.Sprintf("SELECT %s FROM %s", fieldStr, builder.table)

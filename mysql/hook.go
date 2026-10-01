@@ -2,20 +2,20 @@ package mysql
 
 // 宿主接入点（钩子）：
 //
-// 本库不依赖任何日志框架、调度框架与项目代码，SQL 日志、错误日志、后台协程、
-// 调用位置裁剪全部通过下面的 Hook 由宿主注入；不注入时用库内默认行为：
-//   - SQL：不输出（避免库被无意间变成日志刷屏源）
-//   - Error：写标准库日志
-//   - Async：普通 go 协程，并 recover 掉 panic
-//   - CallSite：原样使用
+// 本库不依赖任何日志框架、调度框架与项目代码，对外只有两个可注入点：
+//   - CallSite：裁剪调用位置的展示形态（库采集到的是磁盘上的原始路径）
+//   - SQL：每条 SQL 执行后回调（语句 + 耗时 + 调用位置）
 //
-// 典型用法（宿主启动时设置一次）：
+// 其余行为都在库内固定，不需要宿主接管：
+//   - 错误日志：标准库 log（严重错误直接打到控制台）
+//   - 后台协程：普通 go 协程并 recover 掉 panic（只用在连接池预热）
+//   - 未注入 SQL 钩子时：完全不输出，也不做栈回溯
+//
+// 用法（宿主启动时设置一次）：
 //
 //	mysql.SetHook(mysql.Hook{
 //		CallSite: func(raw mysql.CallSite) mysql.CallSite { return trimSite(raw) },
-//		SQL:      func(site mysql.CallSite, query string, args ...any) { mylog.SQL(site, query, args) },
-//		Error:    func(message string, err error) { mylog.Error(message, err) },
-//		Async:    core.Go,
+//		SQL:      func(site mysql.CallSite, query string, cost time.Duration, args ...any) { mylog.SQL(site, query, cost, args) },
 //	})
 
 import (
@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // CallSite 一次调用的位置：File 为源文件路径（库只做归一化，不假定宿主的目录结构），
@@ -34,24 +35,16 @@ type CallSite struct {
 	Function string
 }
 
-// Hook 宿主注入的钩子；四个字段都可以为 nil，nil 表示使用库内默认行为。
+// Hook 宿主注入的钩子；两个字段都可以为 nil，nil 表示不做任何事情。
 type Hook struct {
 	// CallSite 裁剪调用位置：库采集到的 File 是磁盘上的原始路径，
 	// 宿主可在这里换成自己习惯的展示形态（例如裁成项目内相对路径）。
-	// 该裁剪同时作用于 SQL 日志与 SQL 统计，为 nil 时原样使用。
+	// 裁剪结果对 SQL 回调与错误日志都生效，为 nil 时原样使用。
 	CallSite func(raw CallSite) CallSite
 
 	// SQL 每执行一条 SQL 回调一次（查询、写入、表结构探测都算）。
-	// 为 nil 时不输出任何内容。
-	SQL func(site CallSite, query string, args ...any)
-
-	// Error 执行出错时回调（含事务回滚失败）；为 nil 时写标准库日志。
-	Error func(message string, err error)
-
-	// Async 后台任务（连接池预热）；为 nil 时用普通 go 协程并 recover 掉 panic。
-	// 宿主若使用协程本地存储（gin 上下文、请求级日志写入器绑定等），
-	// 必须在这里换成能继承协程变量的实现，否则后台日志会丢。
-	Async func(task func())
+	// cost 为本次执行耗时（拿不到耗时的出口传 0）；为 nil 时既不出日志也不做栈回溯。
+	SQL func(site CallSite, query string, cost time.Duration, args ...any)
 }
 
 // currentHook 当前生效的钩子集合，用原子指针承载，允许启动阶段与运行阶段并发读写
@@ -70,28 +63,30 @@ func hook() Hook {
 	return Hook{}
 }
 
-// hookSQL 执行 SQL 日志钩子（未注入时不输出）
-func hookSQL(site CallSite, query string, args ...any) {
-	if sqlHook := hook().SQL; sqlHook != nil {
-		sqlHook(site, query, args)
-	}
-}
-
-// hookError 执行错误日志钩子；未注入时写标准库日志
-func hookError(message string, queryErr error) {
-	if errorHook := hook().Error; errorHook != nil {
-		errorHook(message, queryErr)
+// recordSQL 库内所有 SQL 出口的统一回调（Builder 的增删改查、包级 Query/Exec、表结构探测都走它）：
+// 采集调用位置后交给 Hook.SQL，宿主一次就能拿到「执行了什么 SQL、耗了多久、由哪行业务代码发起」。
+// 未注入 SQL 钩子时零开销返回，连栈回溯都不做。
+func recordSQL(cost time.Duration, query string, args ...any) {
+	sqlHook := hook().SQL
+	if sqlHook == nil {
 		return
 	}
+
+	// skip=1：跳过 recordSQL 自身，取「第一个不在本库内的帧」，即真正发起这次 SQL 的业务位置
+	site := callSite(1)
+	if site.File == "" {
+		return
+	}
+	sqlHook(site, query, cost, args...)
+}
+
+// logError 库内统一的错误日志出口：写标准库 log（严重错误直接打到控制台），不依赖宿主的日志框架。
+func logError(message string, queryErr error) {
 	log.Printf("[MYSQL] %s: %v", message, queryErr)
 }
 
-// hookAsync 执行后台任务；未注入时用普通 go 协程（panic 只记日志，不带崩进程）
-func hookAsync(task func()) {
-	if asyncHook := hook().Async; asyncHook != nil {
-		asyncHook(task)
-		return
-	}
+// runAsync 库内后台任务入口（目前只有连接池预热用）：普通 go 协程，panic 只记日志、不带崩进程。
+func runAsync(task func()) {
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {

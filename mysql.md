@@ -1,17 +1,5 @@
 # mysql 查询构建器（`github.com/laocc/gdo/mysql`）使用说明
 
-本文覆盖 `Table` / `Where` / `WhereArg` / `WhereOr` 及增删改查、事务的全部用法与示例，示例中的 SQL 都是构建器真实生成的形状。
-
-> **先看两处改名（2026-10-01）**，老代码里见到旧名不要混：
->
-> | 旧名 | 现名 | 说明 |
-> |---|---|---|
-> | `WhereMap(map[string]any)` | **`Where(...)`** | 键值对 + 操作符后缀（主用） |
-> | `Where(query string, args ...any)` | **`WhereArg(...)`** | 原生 SQL 片段 |
->
-> 仓库里的旧调用已全量迁移；新代码一律用 `Where`，只有原生表达式（函数、OR 组合、嵌套）才用 `WhereArg`。
-
-## 一分钟上手
 
 ```go
 package example
@@ -51,6 +39,7 @@ func LoadList(params ListParams) ([]map[string]any, *mysql.PagingData, error) {
 | `mysql.TableWithDB(db, table)`                 | 指定另一个 `*sql.DB` 实例                                           |
 | `Select(fields...)`                            | 指定查询列，默认 `*`                                                 |
 | `SelectSkip(fields...)`                        | 全列中剔除若干列（列名自动查 `information_schema` 并缓存），用于大表少读几列            |
+| `Distinct()`                                   | 消除查询结果中的重复行（`SELECT DISTINCT`），与 `Select` / `SelectSkip` 连用          |
 | `Where(args...)`                               | 键值对条件，**多个条件之间 AND**；也接受一个 `map[string]any`                  |
 | `WhereOr(groups...)`                           | 多组条件，**组内 AND、组间 OR**                                        |
 | `WhereIn(field, values)`                       | `field IN (?, ?, ...)`（与 `Where("field@", values)` 等价）       |
@@ -206,8 +195,7 @@ builder.WhereArg("((a = ? AND b = ?) OR (a = ? AND c = ?))", 3, 23, 5, 23)
 
 ### 2.7 条件写错了会怎样
 
-构建器不在 `Where` 当场返回错误，而是把错误记在 `Builder` 上（`whereParseErr`），在 `All` / `Get` / `Update` / `Delete`
-真正执行前原样返回，例如：
+构建器不在 `Where` 当场返回错误，而是把错误记在 `Builder` 上（`whereParseErr`），在 `All` / `Get` / `Update` / `Delete`真正执行前原样返回，例如：
 
 ```
 where 条件字段名不合法: "voNumber+"
@@ -227,12 +215,12 @@ WhereOr 的条件组不能为空
 ```go
 // 列表 + 分页
 rows, paging, pageErr := mysql.Table("tabVoucher").
-SelectSkip("voSetting"). // 全列里剔除 voSetting
-Where("voState", 1).
-Where("voTitle,voName~", keyword).
-OrderBy("voSort DESC, voID DESC").
-Paging(page, pageSize) // pageSize 省略时默认 20
-// paging.Recode / paging.Total / paging.Size / paging.Current
+  SelectSkip("voSetting"). // 全列里剔除 voSetting
+  Where("voState", 1).
+  Where("voTitle,voName~", keyword).
+  OrderBy("voSort DESC, voID DESC").
+  Paging(page, pageSize) // pageSize 省略时默认 20
+  // paging.Recode / paging.Total / paging.Size / paging.Current
 
 // 单行
 row, queryErr := mysql.Table("tabUser").Get(mysql.M("userID", userID))
@@ -398,8 +386,9 @@ for fieldKey, fieldValue := range params {
 }
 ```
 
-所有经构建器执行的语句都会进 SQL 执行统计（`tabSql`，管理端 `/admin/sqlstat/board` 查看），开关在
-`config.ini [sqlstat] enable`。
+所有经构建器执行的语句（Builder 的增删改查、包级 `Query`/`Exec`、表结构探测）都会回调 `Hook.SQL`：
+回调参数是「调用位置 + 语句 + 耗时 + 参数」，宿主拿它自己写日志、做统计或慢查询监控，**本库不做任何 SQL 存储**。
+`Skip`/`GetPool` 这类拿裸连接执行的语句不经过构建器，自然也不会回调。
 
 ---
 
@@ -428,3 +417,4 @@ for fieldKey, fieldValue := range params {
 * `~` 的通配符规则：值只要带了一个 `%`（开头或结尾）就原样使用，不再补；没带则按 `^` / `$` 锚点补。
 * `Update` / `Delete` 禁止不带条件执行（返回明确错误，不再生成全表语句）。
 * `Where` / `WhereOr` 的参数不合法时记录错误并在执行前返回，绝不静默丢条件。
+* 新增 `Distinct()`：消除查询结果重复行（`SELECT DISTINCT`），可配合 `Select` / `SelectSkip` 去重。

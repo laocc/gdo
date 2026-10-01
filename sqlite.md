@@ -158,6 +158,7 @@ if whereErr != nil {
 |---|---|
 | `Select(fields...)` | 指定查询列，默认 `*`；可用 `AS` 别名（返回 map 的键就是别名） |
 | `SelectSkip(fields...)` | 全列中剔除若干列（列名按 `PRAGMA table_info` 取） |
+| `Distinct()` | 消除查询结果中的重复行（`SELECT DISTINCT`），与 `Select` / `SelectSkip` 连用 |
 | `OrderBy` / `GroupBy` / `Having` | 排序、分组、分组后过滤（`Having` 仅在 `GroupBy` 后生效） |
 | `Limit(n)` / `Offset(n)` | 限制与偏移（`Paging` 内部会覆盖它们） |
 | `Decode(fields...)` | 指定列：字符串/`[]byte` 按 JSON 解码成对象；整型按位拆分成 `[1,2,4]` |

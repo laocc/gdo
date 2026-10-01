@@ -1,0 +1,30 @@
+# 编译产物与二进制
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# 覆盖率
+*.coverprofile
+coverage.out
+
+# 依赖
+/vendor/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# AI 助手工作数据
+.codebuddy/

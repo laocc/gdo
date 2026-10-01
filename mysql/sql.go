@@ -15,7 +15,7 @@ func getTableColumns(db *sql.DB, table string) ([]string, error) {
 	query := `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
 	queryBegin := time.Now()
 	rows, queryErr := db.Query(query, table)
-	RecordSQL(time.Since(queryBegin), query, table)
+	recordSQL(time.Since(queryBegin), query, table)
 	if queryErr != nil {
 		return nil, fmt.Errorf("查询表结构失败 [%s]: %w", table, queryErr)
 	}

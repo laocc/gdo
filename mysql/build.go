@@ -29,6 +29,7 @@ type Builder struct {
 	db            *sql.DB
 	trx           *sql.Tx
 	table         string
+	distinct      bool
 	fields        []string
 	skipFields    []string
 	where         []string
@@ -115,7 +116,7 @@ func (builder *Builder) rollbackOnErr(returnErr error) error {
 		return returnErr
 	}
 	if rollbackErr := builder.trx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-		hookError("事务回滚失败", rollbackErr)
+		logError("事务回滚失败", rollbackErr)
 	}
 	return returnErr
 }
@@ -140,6 +141,14 @@ func (builder *Builder) queryRow(query string, args ...any) *sql.Row {
 // Select 指定查询字段，默认 *
 func (builder *Builder) Select(fields ...string) *Builder {
 	builder.fields = fields
+	return builder
+}
+
+// Distinct 消除查询结果中的重复行（SELECT DISTINCT）。
+// 与 Select / SelectSkip 连用，结果按所选列去重。
+// 用法: mysql.Table("tabVoucher").Distinct().Select("voState").Pluck("voState")
+func (builder *Builder) Distinct() *Builder {
+	builder.distinct = true
 	return builder
 }
 
@@ -448,6 +457,11 @@ func (builder *Builder) buildQuery() (string, []any, error) {
 		fieldStr = strings.Join(selectedColumns, ", ")
 	}
 
+	// DISTINCT 消除重复行
+	if builder.distinct {
+		fieldStr = "DISTINCT " + fieldStr
+	}
+
 	query := fmt.Sprintf("%s %s %s %s", "SELECT", fieldStr, "FROM", builder.table)
 
 	// WHERE
@@ -557,9 +571,9 @@ func (builder *Builder) All(conditions ...any) ([]map[string]any, error) {
 	}
 	queryBegin := time.Now()
 	rows, err := builder.query(query, queryArgs...)
-	RecordSQL(time.Since(queryBegin), query, queryArgs...)
+	recordSQL(time.Since(queryBegin), query, queryArgs...)
 	if err != nil {
-		hookError(fmt.Sprintf("Mysql执行 Query(%s)报错", query), err)
+		logError(fmt.Sprintf("Mysql执行 Query(%s)报错", query), err)
 		return nil, fmt.Errorf("MYSQL查询失败 [%s]: %w", query, err)
 	}
 	results, buildErr2 := buildResult(rows)
@@ -644,9 +658,9 @@ func (builder *Builder) InsertBatch(rows []map[string]any) (uint64, error) {
 
 	execBegin := time.Now()
 	result, execErr := builder.exec(query, argList...)
-	RecordSQL(time.Since(execBegin), query, argList...)
+	recordSQL(time.Since(execBegin), query, argList...)
 	if execErr != nil {
-		hookError(fmt.Sprintf("Mysql执行 InsertBatch(%s)报错", query), execErr)
+		logError(fmt.Sprintf("Mysql执行 InsertBatch(%s)报错", query), execErr)
 		return 0, fmt.Errorf("批量插入失败 [%s]: %w", query, execErr)
 	}
 	affectedRows, affectedErr := result.RowsAffected()
@@ -695,9 +709,9 @@ func (builder *Builder) Insert(data map[string]any) (uint64, error) {
 
 	execBegin := time.Now()
 	result, execErr := builder.exec(query, argList...)
-	RecordSQL(time.Since(execBegin), query, argList...)
+	recordSQL(time.Since(execBegin), query, argList...)
 	if execErr != nil {
-		hookError(fmt.Sprintf("Mysql执行 Insert(%s)报错", query), execErr)
+		logError(fmt.Sprintf("Mysql执行 Insert(%s)报错", query), execErr)
 		return 0, fmt.Errorf("插入失败 [%s]: %w", query, execErr)
 	}
 	lastInsertID, insertErr := result.LastInsertId()
@@ -743,9 +757,9 @@ func (builder *Builder) Update(data map[string]any, conditions ...any) (uint64, 
 
 	execBegin := time.Now()
 	result, execErr := builder.exec(query, argList...)
-	RecordSQL(time.Since(execBegin), query, argList...)
+	recordSQL(time.Since(execBegin), query, argList...)
 	if execErr != nil {
-		hookError(fmt.Sprintf("Mysql执行 Update(%s)报错", query), execErr)
+		logError(fmt.Sprintf("Mysql执行 Update(%s)报错", query), execErr)
 		return 0, fmt.Errorf("更新失败 [%s]: %w", query, execErr)
 	}
 	affectedRows, affectedErr := result.RowsAffected()
@@ -761,7 +775,7 @@ func (builder *Builder) Update(data map[string]any, conditions ...any) (uint64, 
 		var hasRecord bool
 		verifyBegin := time.Now()
 		queryErr := builder.queryRow(verifyQuery, builder.whereArgs...).Scan(&hasRecord)
-		RecordSQL(time.Since(verifyBegin), verifyQuery, builder.whereArgs...)
+		recordSQL(time.Since(verifyBegin), verifyQuery, builder.whereArgs...)
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return 0, fmt.Errorf("未更新：没有符合条件（%s）的记录", strings.Join(builder.where, " AND "))
 		}
@@ -792,7 +806,7 @@ func (builder *Builder) Delete(conditions ...any) (int64, error) {
 		var hasRecord bool
 		verifyBegin := time.Now()
 		verifyErr := builder.queryRow(verifyQuery, builder.whereArgs...).Scan(&hasRecord)
-		RecordSQL(time.Since(verifyBegin), verifyQuery, builder.whereArgs...)
+		recordSQL(time.Since(verifyBegin), verifyQuery, builder.whereArgs...)
 		if errors.Is(verifyErr, sql.ErrNoRows) {
 			return 0, fmt.Errorf("删除失败：没有符合条件的记录")
 		}
@@ -808,9 +822,9 @@ func (builder *Builder) Delete(conditions ...any) (int64, error) {
 
 	execBegin := time.Now()
 	result, execErr := builder.exec(query, builder.whereArgs...)
-	RecordSQL(time.Since(execBegin), query, builder.whereArgs...)
+	recordSQL(time.Since(execBegin), query, builder.whereArgs...)
 	if execErr != nil {
-		hookError(fmt.Sprintf("Mysql执行 Delete(%s)报错", query), execErr)
+		logError(fmt.Sprintf("Mysql执行 Delete(%s)报错", query), execErr)
 		return 0, fmt.Errorf("删除失败 [%s]: %w", query, execErr)
 	}
 	affectedRows, affectedErr := result.RowsAffected()

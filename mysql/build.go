@@ -502,9 +502,6 @@ func (builder *Builder) buildQuery() (string, []any, error) {
 }
 
 // Paging 分页查询，返回分页数据，pageSize 默认 20
-// 用法: pagingData, err := mysql.Table("tabUser").Paginate(1)             // 每页20条
-//
-//	pagingData, err := mysql.Table("tabUser").Paginate(1, 50)        // 每页50条
 func (builder *Builder) Paging(page int64, pageSize ...int64) ([]map[string]any, *PagingData, error) {
 	var actualPageSize int64 = 20
 	if len(pageSize) > 0 {
